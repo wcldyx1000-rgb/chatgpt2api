@@ -1129,7 +1129,7 @@ class ImageTaskService:
                 raise RuntimeError("图片 URL 解析失败")
 
             image_items = [
-                {"b64_json": __import__("base64").b64encode(image_data).decode("ascii")}
+                {"_image_bytes": image_data}
                 for image_data in backend.download_image_bytes(image_urls)
             ]
             with self._lock:
