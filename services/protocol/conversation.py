@@ -494,11 +494,17 @@ def format_image_result(
     data: list[dict[str, Any]] = []
     image_urls: list[str] = []
     for item in items:
-        b64_json = str(item.get("b64_json") or "").strip()
-        if not b64_json:
-            continue
+        raw_image_bytes = item.get("_image_bytes")
+        if isinstance(raw_image_bytes, bytes):
+            image_bytes = raw_image_bytes
+        elif isinstance(raw_image_bytes, (bytearray, memoryview)):
+            image_bytes = bytes(raw_image_bytes)
+        else:
+            b64_json = str(item.get("b64_json") or "").strip()
+            if not b64_json:
+                continue
+            image_bytes = base64.b64decode(b64_json)
         revised_prompt = str(item.get("revised_prompt") or prompt).strip() or prompt
-        image_bytes = base64.b64decode(b64_json)
         image_bytes = upscale_image_if_needed(image_bytes, requested_size)
         stored_url = save_image_bytes(
             image_bytes,
@@ -1611,10 +1617,7 @@ def _image_result_output_from_urls(
         total,
         path=path,
     )
-    image_items = [
-        {"b64_json": base64.b64encode(image_data).decode("ascii")}
-        for image_data in downloaded_images
-    ]
+    image_items = [{"_image_bytes": image_data} for image_data in downloaded_images]
     formatted = format_image_result(
         image_items,
         request.prompt,
