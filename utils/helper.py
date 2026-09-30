@@ -1,7 +1,6 @@
 import base64
 import hashlib
 import json
-import mimetypes
 import queue
 import re
 import threading
@@ -15,7 +14,6 @@ from curl_cffi import requests
 from curl_cffi.requests.exceptions import RequestException
 from curl_cffi.requests.models import STREAM_END
 from fastapi import HTTPException
-from services.proxy_service import proxy_settings
 from utils.log import logger
 
 WEB_IMAGE_MODELS = (
@@ -39,7 +37,6 @@ SUPPORTED_JSON_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "imag
 MAX_JSON_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_JSON_EDIT_IMAGES = 10
 DATA_URL_IMAGE_RE = re.compile(r"^data:(?P<mime>[-+./\w]+);base64,(?P<data>.*)$", re.DOTALL)
-REMOTE_IMAGE_TIMEOUT_SECONDS = 20
 
 
 def _image_extension(mime_type: str) -> str:
@@ -529,41 +526,29 @@ def _decode_message_image_url(value: object) -> tuple[bytes, str] | None:
     if source.startswith("data:"):
         header, _, data = source.partition(",")
         mime = header.split(";")[0].removeprefix("data:") or "image/png"
-        return base64.b64decode(data), mime
+        encoded = re.sub(r"\s+", "", data)
+        if len(encoded) > ((MAX_JSON_IMAGE_BYTES + 2) // 3) * 4 + 4:
+            raise HTTPException(status_code=400, detail={"error": "image_url exceeds 10MB limit"})
+        try:
+            image_data = base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail={"error": "invalid base64 image data"}) from exc
+        if not image_data:
+            raise HTTPException(status_code=400, detail={"error": "image file is empty"})
+        return image_data, mime
     if not source.startswith(("http://", "https://")):
         return None
     parsed = urlparse(source)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
 
-    try:
-        response = requests.get(
-            source,
-            headers={"Accept": "image/*,*/*;q=0.8", "User-Agent": "chatgpt2api vision fetcher"},
-            timeout=REMOTE_IMAGE_TIMEOUT_SECONDS,
-            allow_redirects=True,
-            **proxy_settings.build_session_kwargs(),
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail={"error": f"image_url fetch failed: {exc}"}) from exc
-    if not 200 <= response.status_code < 300:
-        raise HTTPException(status_code=400, detail={"error": f"image_url fetch failed: HTTP {response.status_code}"})
-    content_length = str(response.headers.get("content-length") or "").strip()
-    if content_length.isdigit() and int(content_length) > MAX_JSON_IMAGE_BYTES:
-        raise HTTPException(status_code=400, detail={"error": "image_url exceeds 10MB limit"})
-    image_data = response.content
-    if not image_data:
-        raise HTTPException(status_code=400, detail={"error": "image_url returned empty content"})
+    # Reuse the hardened image fetcher: public-address validation pinned to the
+    # actual connection, per-hop redirect checks and a streamed size cap.
+    from api.image_inputs import _download_image_url
+
+    image_data, _, mime = _download_image_url(source)
     if len(image_data) > MAX_JSON_IMAGE_BYTES:
         raise HTTPException(status_code=400, detail={"error": "image_url exceeds 10MB limit"})
-    mime = str(response.headers.get("content-type") or "image/png").split(";", 1)[0].lower()
-    guessed_mime = mimetypes.guess_type(parsed.path)[0] or ""
-    if mime and not mime.startswith("image/") and mime not in {"application/octet-stream", "binary/octet-stream"}:
-        raise HTTPException(status_code=400, detail={"error": "image_url must point to an image"})
-    if not mime.startswith("image/") and guessed_mime.startswith("image/"):
-        mime = guessed_mime
-    if not mime.startswith("image/"):
-        mime = "image/png"
     return image_data, mime
 
 

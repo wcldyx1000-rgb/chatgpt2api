@@ -9,7 +9,7 @@ import re
 import socket
 import threading
 from pathlib import PurePosixPath
-from typing import Any, TypeGuard
+from typing import Any, NamedTuple, TypeGuard
 from urllib.parse import ParseResult, unquote, unquote_to_bytes, urljoin, urlparse
 
 from curl_cffi import CurlOpt, requests
@@ -18,7 +18,17 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 ImageInput = tuple[bytes, str, str]
-ImageSource = str | UploadFile | ImageInput
+
+
+class InlineImage(NamedTuple):
+    """Inline base64 image kept encoded until count and size limits are checked."""
+
+    encoded: str
+    filename: str
+    mime_type: str
+
+
+ImageSource = str | UploadFile | ImageInput | InlineImage
 
 MAX_IMAGE_REFERENCE_BYTES = 50 * 1024 * 1024
 MAX_IMAGE_INPUT_BYTES = 100 * 1024 * 1024
@@ -99,12 +109,17 @@ def _json_reference_value(value: object) -> object:
         return value
 
 
-def _decode_base64_image(value: object, filename: str, mime_type: str) -> ImageInput:
+def _inline_base64_image(value: object, filename: str, mime_type: str) -> InlineImage:
     encoded = str(value).strip()
     # Reject obviously oversized payloads before base64 decoding allocates a
     # second copy of the input in memory.
     if len(encoded) > ((MAX_IMAGE_REFERENCE_BYTES + 2) // 3) * 4 + 4:
         raise HTTPException(status_code=400, detail={"error": "image URL exceeds 50MB limit"})
+    return InlineImage(encoded, filename, mime_type)
+
+
+def _decode_base64_image(value: object, filename: str, mime_type: str) -> ImageInput:
+    encoded = _inline_base64_image(value, filename, mime_type).encoded
     try:
         data = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -128,7 +143,7 @@ def _source_from_object(value: dict[str, Any]) -> list[ImageSource]:
     if inline:
         filename = _clean(value.get("filename") or value.get("file_name"), "image.png")
         mime_type = _clean(value.get("mime_type") or value.get("mimeType"), "image/png")
-        return [_decode_base64_image(inline, filename, mime_type)]
+        return [_inline_base64_image(inline, filename, mime_type)]
     if not has_url:
         raise HTTPException(status_code=400, detail={"error": "image reference must include image_url"})
     image_url = value.get("image_url", value.get("url"))
@@ -148,7 +163,7 @@ def _sources_from_value(value: object) -> list[ImageSource]:
             return []
         if text.lower().startswith(("data:", "http://", "https://")):
             return [text]
-        return [_decode_base64_image(text, "image.png", "image/png")]
+        return [_inline_base64_image(text, "image.png", "image/png")]
     if isinstance(value, list):
         sources: list[ImageSource] = []
         for item in value:
@@ -442,6 +457,9 @@ async def read_image_sources(sources: list[ImageSource]) -> list[ImageInput]:
         images.append(image)
 
     for source in sources:
+        if isinstance(source, InlineImage):
+            append_image(await run_in_threadpool(_decode_base64_image, *source))
+            continue
         if isinstance(source, tuple):
             append_image(source)
             continue

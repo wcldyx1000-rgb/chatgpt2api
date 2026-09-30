@@ -2,6 +2,10 @@
 
 ## Unreleased
 
++ [修复] 对话、Responses 与 Messages 接口的 `image_url` 改用与图片编辑相同的下载器，拒绝内网、本机和元数据地址，逐跳校验重定向并限制读取大小；`data:` 图片在解码前检查大小并拒绝无效 base64。
++ [修复] 图片编辑的内联 base64 图片在检查数量与总大小后再逐张解码，超限时立即停止。
++ [修复] 管理员密钥改为常量时间比较。
+
 ## 3.2.3 - 2026-09-09
 
 + [新增] Python 图片接口和共享模型列表支持 `gpt-image-2.5`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`，通过 ChatGPT Web 的 `auto` 路由兼容，不包含 `exact` 别名。
