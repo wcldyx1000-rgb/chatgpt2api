@@ -433,6 +433,7 @@ class ConfigStore:
         self.data = self._load()
         self._last_repository_refresh_at = monotonic()
         self._storage_backend: StorageBackend | None = None
+        self._bootstrap_auth_key: tuple[tuple[int, int, int] | None, object] | None = None
         if _is_invalid_auth_key(self.auth_key):
             raise ValueError(
                 "❌ auth-key 未设置！\n"
@@ -468,10 +469,24 @@ class ConfigStore:
 
     @property
     def auth_key(self) -> str:
-        bootstrap = read_json_object(self.path, name="config.json")
         return _normalize_auth_key(
-            os.getenv("CHATGPT2API_AUTH_KEY") or bootstrap.get("auth-key")
+            os.getenv("CHATGPT2API_AUTH_KEY") or self._read_bootstrap_auth_key()
         )
+
+    def _read_bootstrap_auth_key(self) -> object:
+        # auth_key is checked on every request; only re-parse config.json
+        # when the file itself changed.
+        try:
+            stat = self.path.stat()
+            key = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except OSError:
+            key = None
+        cached = self._bootstrap_auth_key
+        if cached is not None and key is not None and cached[0] == key:
+            return cached[1]
+        value = read_json_object(self.path, name="config.json").get("auth-key")
+        self._bootstrap_auth_key = (key, value)
+        return value
 
     @property
     def refresh_account_interval_minute(self) -> int:

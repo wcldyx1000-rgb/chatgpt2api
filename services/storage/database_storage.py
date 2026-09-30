@@ -153,6 +153,18 @@ class DatabaseStorageBackend(StorageBackend):
                 session.close()
         raise RuntimeError(f"{collection} changed repeatedly while loading its snapshot")
 
+    def load_revision(self, collection: StorageCollection) -> str | None:
+        session = self.Session()
+        try:
+            version = session.execute(
+                select(StorageRevisionModel.version).where(
+                    StorageRevisionModel.collection == collection
+                )
+            ).scalar_one()
+        finally:
+            session.close()
+        return self._revision_value(collection, version)
+
     def load_accounts_snapshot(self) -> StorageSnapshot:
         return self._load_snapshot("accounts")
 

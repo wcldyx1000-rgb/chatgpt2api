@@ -236,6 +236,7 @@ class ImageStorageService:
         self._item_lock_dir = index_file.with_suffix(index_file.suffix + ".item-locks")
         self._sync_file_lock = index_file.with_suffix(index_file.suffix + ".sync.lock")
         self._remote_delete_file = index_file.with_suffix(index_file.suffix + ".remote-deletes.json")
+        self._index_snapshot: tuple[tuple[int, int, int], dict[str, dict[str, object]]] | None = None
 
     @contextmanager
     def _index_guard(self) -> Iterator[None]:
@@ -288,6 +289,25 @@ class ImageStorageService:
                 item["webdav"] = True
             clean[rel] = item
         return clean
+
+    def _read_index_snapshot(self) -> dict[str, dict[str, object]]:
+        """Return a shared, read-only index snapshot for lookups.
+
+        The index is always replaced as a whole file, so its stat identity
+        changes on every write and a matching identity means the parsed
+        snapshot is still current. Callers must not mutate the result.
+        """
+        try:
+            stat = self.index_file.stat()
+        except OSError:
+            return self._load_clean_index()
+        key = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        cached = self._index_snapshot
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        items = self._load_clean_index()
+        self._index_snapshot = (key, items)
+        return items
 
     def _save_index(self, items: dict[str, dict[str, object]]) -> None:
         _write_json_object(self.index_file, {"items": items})
@@ -478,8 +498,7 @@ class ImageStorageService:
             raise HTTPException(status_code=404, detail="image not found")
         # File paths are not an authorization boundary: only assets registered
         # in the Gallery index may be read through this service.
-        with self._index_guard():
-            item = self._load_clean_index().get(safe_rel)
+        item = self._read_index_snapshot().get(safe_rel)
         if not isinstance(item, dict):
             raise HTTPException(status_code=404, detail="image not found")
         path = image_local_path(safe_rel)
@@ -515,9 +534,7 @@ class ImageStorageService:
         safe_rel = normalize_image_relative_path(rel)
         if not _is_image_rel(safe_rel):
             return None
-        with self._index_guard():
-            items = self._load_clean_index()
-            raw = items.get(safe_rel, {}).get("genbox_push")
+        raw = self._read_index_snapshot().get(safe_rel, {}).get("genbox_push")
         if not isinstance(raw, dict):
             return None
         status = _clean(raw.get("status"))
@@ -545,7 +562,7 @@ class ImageStorageService:
         if not remote_rels:
             return existing
 
-        items = self._load_clean_index()
+        items = self._read_index_snapshot()
         existing.update(
             safe_rel
             for safe_rel in remote_rels
@@ -555,8 +572,7 @@ class ImageStorageService:
 
     def has_local(self, rel: str) -> bool:
         safe_rel = normalize_image_relative_path(rel)
-        with self._index_guard():
-            item = self._load_clean_index().get(safe_rel)
+        item = self._read_index_snapshot().get(safe_rel)
         return bool(isinstance(item, dict) and item.get("local")) and image_local_path(safe_rel).is_file()
 
     @staticmethod

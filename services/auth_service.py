@@ -127,6 +127,17 @@ class AuthService:
             with self._lock:
                 expected_local_revision = self._revision
             try:
+                current_revision = self.storage.load_revision("auth_keys")
+            except Exception:
+                return self._snapshot_is_usable()
+            if current_revision is not None and current_revision == expected_local_revision:
+                # Unchanged collection: confirm freshness without reloading every key.
+                with self._lock:
+                    if self._revision == expected_local_revision:
+                        self._last_snapshot_refresh_success_at = monotonic()
+                        return True
+                return self._snapshot_is_usable()
+            try:
                 items, revision = self._load_snapshot()
             except Exception:
                 return self._snapshot_is_usable()
@@ -375,50 +386,51 @@ class AuthService:
         candidate_hash = _hash_key(candidate)
         if not self._refresh_snapshot_if_due():
             return None
+        now = datetime.now(timezone.utc)
         with self._lock:
-            now = datetime.now(timezone.utc)
-            for attempt in range(_CAS_ATTEMPTS):
-                index = self._find_hash_index_locked(candidate_hash)
-                if index is None:
-                    return None
-                next_item = dict(self._items[index])
-                next_item["last_used_at"] = now.isoformat()
-                item_id = self._clean(next_item.get("id"))
-                last_flush_at = self._last_used_flush_at.get(item_id)
-                if last_flush_at is not None and (now - last_flush_at).total_seconds() < 60:
-                    self._items[index] = next_item
-                    return self._public_item(next_item)
-                if self._revision is None:
-                    self._items[index] = next_item
-                    return self._public_item(next_item)
-                try:
-                    result = self.storage.mutate_auth_keys(
-                        StorageMutation(
-                            upserts=(next_item,),
-                            expected_revision=self._revision,
-                        )
-                    )
-                except StorageRevisionConflictError:
-                    try:
-                        self._reload_locked()
-                    except Exception:
-                        return None
-                    refreshed_index = self._find_hash_index_locked(candidate_hash)
-                    if refreshed_index is None:
-                        return None
-                    if attempt + 1 >= _CAS_ATTEMPTS:
-                        validated_item = dict(self._items[refreshed_index])
-                        validated_item["last_used_at"] = now.isoformat()
-                        self._items[refreshed_index] = validated_item
-                        return self._public_item(validated_item)
-                    continue
-                except Exception:
-                    self._items[index] = next_item
-                    return self._public_item(next_item)
-                self._set_cached_item_locked(next_item, result.revision)
-                self._last_used_flush_at[item_id] = now
+            index = self._find_hash_index_locked(candidate_hash)
+            if index is None:
+                return None
+            next_item = dict(self._items[index])
+            next_item["last_used_at"] = now.isoformat()
+            self._items[index] = next_item
+            item_id = self._clean(next_item.get("id"))
+            last_flush_at = self._last_used_flush_at.get(item_id)
+            expected_revision = self._revision
+            if (
+                expected_revision is None
+                or (last_flush_at is not None and (now - last_flush_at).total_seconds() < 60)
+            ):
                 return self._public_item(next_item)
-        return None
+            # Claim this minute's flush so concurrent requests do not repeat it.
+            self._last_used_flush_at[item_id] = now
+        self._flush_last_used(next_item, expected_revision, last_flush_at)
+        return self._public_item(next_item)
+
+    def _flush_last_used(
+        self,
+        item: dict[str, object],
+        expected_revision: str,
+        previous_flush_at: datetime | None,
+    ) -> None:
+        """Persist last_used_at outside the auth lock; it is best-effort metadata."""
+        item_id = self._clean(item.get("id"))
+        try:
+            result = self.storage.mutate_auth_keys(
+                StorageMutation(upserts=(item,), expected_revision=expected_revision)
+            )
+        except Exception:
+            # Conflict or storage error: release the claim so a later request
+            # retries after the snapshot refresh picks up the new revision.
+            with self._lock:
+                if previous_flush_at is None:
+                    self._last_used_flush_at.pop(item_id, None)
+                else:
+                    self._last_used_flush_at[item_id] = previous_flush_at
+            return
+        with self._lock:
+            if self._revision == expected_revision:
+                self._revision = result.revision
 
 
 auth_service = AuthService(config.get_storage_backend())

@@ -203,13 +203,13 @@ def create_router(app_version: str) -> APIRouter:
     @router.get("/api/system/update-task", response_model=UpdateTaskView)
     async def get_update_task(authorization: str | None = Header(default=None)):
         require_admin(authorization)
-        return update_service.view(app_version)
+        return await run_in_threadpool(update_service.view, app_version)
 
     @router.post("/api/system/update", response_model=UpdateTaskView, status_code=202)
     async def start_update(authorization: str | None = Header(default=None)):
         require_admin(authorization)
         try:
-            return update_service.start(app_version)
+            return await run_in_threadpool(update_service.start, app_version)
         except UpdateInstallError as exc:
             raise HTTPException(status_code=409, detail={"error": str(exc)}) from exc
 
@@ -295,21 +295,27 @@ def create_router(app_version: str) -> APIRouter:
 
     @router.get("/images/{image_path:path}", include_in_schema=False)
     async def get_image(image_path: str):
-        return get_image_response(image_path)
+        return await run_in_threadpool(get_image_response, image_path)
 
     @router.get("/image-thumbnails/{image_path:path}", include_in_schema=False)
     async def get_image_thumbnail(image_path: str):
-        return get_thumbnail_response(image_path)
+        return await run_in_threadpool(get_thumbnail_response, image_path)
 
     @router.post("/api/images/delete")
     async def delete_images_endpoint(body: ImageDeleteRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
-        return delete_images(body.paths, start_date=body.start_date.strip(), end_date=body.end_date.strip(), all_matching=body.all_matching)
+        return await run_in_threadpool(
+            delete_images,
+            body.paths,
+            start_date=body.start_date.strip(),
+            end_date=body.end_date.strip(),
+            all_matching=body.all_matching,
+        )
 
     @router.post("/api/images/download")
     async def download_images_endpoint(body: ImageDownloadRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
-        buf = download_images_zip(body.paths)
+        buf = await run_in_threadpool(download_images_zip, body.paths)
         return StreamingResponse(
             buf,
             media_type="application/zip",
@@ -319,7 +325,7 @@ def create_router(app_version: str) -> APIRouter:
     @router.get("/api/images/download/{image_path:path}")
     async def download_single_image_endpoint(image_path: str, authorization: str | None = Header(default=None)):
         require_admin(authorization)
-        return get_image_download_response(image_path)
+        return await run_in_threadpool(get_image_download_response, image_path)
 
     @router.post("/api/images/genbox-push", response_model=GalleryGenBoxPushResult)
     async def push_image_to_genbox(
@@ -591,13 +597,13 @@ def create_router(app_version: str) -> APIRouter:
         rel = body.path.strip().lstrip("/")
         if not rel:
             raise HTTPException(status_code=400, detail={"error": "path is required"})
-        tags = set_tags(rel, body.tags)
+        tags = await run_in_threadpool(set_tags, rel, body.tags)
         return {"ok": True, "tags": tags}
 
     @router.get("/api/images/storage")
     async def get_image_storage(authorization: str | None = Header(default=None)):
         require_admin(authorization)
-        return storage_stats()
+        return await run_in_threadpool(storage_stats)
 
     @router.post("/api/images/storage/compress", response_model=GalleryCompressResult)
     async def compress_all_images(authorization: str | None = Header(default=None)):

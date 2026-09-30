@@ -448,6 +448,17 @@ class AccountService:
                 expected_revision = self._accounts_revision
 
             try:
+                current_revision = self.storage.load_revision("accounts")
+            except Exception:
+                current_revision = None
+            if current_revision is not None and current_revision == expected_revision:
+                # Unchanged collection: skip loading and normalizing every account.
+                with self._lock:
+                    if self._accounts_revision == expected_revision:
+                        self._account_snapshot_checked_at = time.monotonic()
+                return False
+
+            try:
                 loaded, revision, _ = self._read_accounts_snapshot()
             except Exception:
                 with self._lock:
@@ -789,7 +800,15 @@ class AccountService:
             except Exception:
                 self._restore_accounts_after_save_error()
                 raise
-            self._persisted_accounts = deepcopy(self._accounts)
+            # The mutation already holds private copies of exactly the changed
+            # accounts, so advance the baseline without copying the whole pool.
+            persisted = self._persisted_accounts
+            for token in mutation.delete_keys:
+                persisted.pop(token, None)
+            for account in mutation.upserts:
+                persisted[str(account.get("access_token") or "").strip()] = account
+            if persisted.keys() != self._accounts.keys():
+                self._persisted_accounts = deepcopy(self._accounts)
             self._accounts_revision = result.revision
             self._account_snapshot_checked_at = time.monotonic()
             self._prune_token_aliases_locked()

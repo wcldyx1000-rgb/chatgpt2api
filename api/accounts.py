@@ -1318,13 +1318,14 @@ def create_router() -> APIRouter:
         next_groups = [group for group in groups if _account_group_id(group.get("id")) != normalized]
         if len(next_groups) == len(groups):
             raise HTTPException(status_code=404, detail={"error": "account group not found"})
-        updated = config.update({"account_groups": next_groups})
+        updated = await run_in_threadpool(config.update, {"account_groups": next_groups})
+        accounts = await run_in_threadpool(account_service.list_accounts)
         targets = [
             (
                 _clean_text(account.get("access_token")),
                 _clean_text(account.get("management_id")),
             )
-            for account in account_service.list_accounts()
+            for account in accounts
             if _clean_text(account.get("group_id")) == normalized
             and _clean_text(account.get("access_token"))
             and _clean_text(account.get("management_id"))
@@ -1579,7 +1580,7 @@ def create_router() -> APIRouter:
         }
 
     @router.post("/api/accounts/import-cleanup")
-    async def cleanup_imported_abnormal_accounts(
+    def cleanup_imported_abnormal_accounts(
             body: AccountImportCleanupRequest,
             authorization: str | None = Header(default=None),
     ):
@@ -1840,7 +1841,7 @@ def create_router() -> APIRouter:
         )
 
     @router.post("/api/accounts/export")
-    async def export_accounts(body: AccountExportRequest, authorization: str | None = Header(default=None)):
+    def export_accounts(body: AccountExportRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         targets, missing_ids = _account_selection_targets(
             body.selection,
@@ -1917,7 +1918,7 @@ def create_router() -> APIRouter:
         )
 
     @router.post("/api/accounts/update")
-    async def update_account(body: AccountUpdateRequest, authorization: str | None = Header(default=None)):
+    def update_account(body: AccountUpdateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         account_id = _clean_text(body.id).lower()
         uses_management_id = bool(account_id)
@@ -2188,7 +2189,7 @@ def create_router() -> APIRouter:
             [payload],
             False,
         )
-        account = account_service.get_account(tokens["access_token"])
+        account = await run_in_threadpool(account_service.get_account, tokens["access_token"])
         account_id = _clean_text((account or {}).get("management_id"))
         if not account_id:
             raise HTTPException(status_code=500, detail={"error": "created account could not be resolved"})
@@ -2251,7 +2252,7 @@ def create_router() -> APIRouter:
         return {"pool_id": pool_id, "files": await run_in_threadpool(list_remote_files, pool)}
 
     @router.post("/api/cpa/pools/{pool_id}/import")
-    async def cpa_pool_import(pool_id: str, body: CPAImportRequest, authorization: str | None = Header(default=None)):
+    def cpa_pool_import(pool_id: str, body: CPAImportRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         pool = cpa_config.get_pool(pool_id)
         if pool is None:
@@ -2360,7 +2361,7 @@ def create_router() -> APIRouter:
         return {"server_id": server_id, "accounts": accounts}
 
     @router.post("/api/sub2api/servers/{server_id}/import")
-    async def sub2api_server_import(server_id: str, body: Sub2APIImportRequest, authorization: str | None = Header(default=None)):
+    def sub2api_server_import(server_id: str, body: Sub2APIImportRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         server = sub2api_config.get_server(server_id)
         if server is None:

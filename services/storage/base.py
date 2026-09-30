@@ -81,6 +81,14 @@ class StorageBackend(ABC):
     def load_accounts_snapshot(self) -> StorageSnapshot:
         """Load accounts together with an opaque collection revision."""
 
+    def load_revision(self, collection: StorageCollection) -> str | None:
+        """Return the current collection revision without loading its items.
+
+        ``None`` means the backend cannot answer cheaply; callers then fall
+        back to a full snapshot load.
+        """
+        return None
+
     def load_accounts(self) -> list[dict[str, Any]]:
         """Compatibility view for callers that do not use revisions yet."""
         return self.load_accounts_snapshot().items

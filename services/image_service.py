@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import mimetypes
+import os
 import threading
 import zipfile
 from pathlib import Path
@@ -20,6 +23,15 @@ from services.image_storage_service import (
 from services.image_tags_service import load_tags, remove_tags
 
 THUMBNAIL_SIZE = (320, 320)
+# Image paths embed a timestamp and content hash, so a path always names the
+# same pixels; lossless compression and thumbnail rebuilds keep them unchanged.
+IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_THUMBNAIL_LOCKS = tuple(threading.Lock() for _ in range(64))
+
+
+def _thumbnail_lock(relative_path: str) -> threading.Lock:
+    digest = hashlib.blake2b(relative_path.encode("utf-8"), digest_size=2).digest()
+    return _THUMBNAIL_LOCKS[int.from_bytes(digest, "big") % len(_THUMBNAIL_LOCKS)]
 
 
 def _cleanup_empty_dirs(root: Path) -> None:
@@ -35,13 +47,15 @@ def get_image_response(relative_path: str) -> FileResponse | Response:
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "*",
+        "Cache-Control": IMMUTABLE_CACHE_CONTROL,
     }
     if image_storage_service.has_local(relative_path):
         return FileResponse(
             image_local_path(relative_path, require_file=True),
             headers=headers,
         )
-    return Response(content=image_storage_service.get_bytes(relative_path), media_type="image/png", headers=headers)
+    media_type = mimetypes.guess_type(relative_path)[0] or "image/png"
+    return Response(content=image_storage_service.get_bytes(relative_path), media_type=media_type, headers=headers)
 
 
 def _thumbnail_path(relative_path: str) -> Path:
@@ -62,6 +76,13 @@ def _image_dimensions(path: Path) -> tuple[int, int] | None:
         return None
 
 
+def _thumbnail_is_fresh(target: Path, source_mtime: float) -> bool:
+    try:
+        return not source_mtime or target.stat().st_mtime >= source_mtime
+    except OSError:
+        return False
+
+
 def ensure_thumbnail(relative_path: str) -> Path:
     target = _thumbnail_path(relative_path)
     source_mtime = 0.0
@@ -69,22 +90,34 @@ def ensure_thumbnail(relative_path: str) -> Path:
     if image_storage_service.has_local(relative_path):
         source = image_local_path(relative_path, require_file=True)
         source_mtime = source.stat().st_mtime
-    if target.exists() and (not source_mtime or target.stat().st_mtime >= source_mtime):
+    if _thumbnail_is_fresh(target, source_mtime):
         return target
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        image_source = source if source is not None else io.BytesIO(image_storage_service.get_bytes(relative_path))
-        with Image.open(image_source) as image:
-            image = ImageOps.exif_transpose(image)
-            if image.mode not in {"RGB", "RGBA"}:
-                image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-            image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-            image.save(target, format="PNG", optimize=True)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail="failed to create thumbnail") from exc
+    with _thumbnail_lock(normalize_image_relative_path(relative_path)):
+        # Another request may have built it while this one waited.
+        if _thumbnail_is_fresh(target, source_mtime):
+            return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            image_source = source if source is not None else io.BytesIO(image_storage_service.get_bytes(relative_path))
+            with Image.open(image_source) as image:
+                image = ImageOps.exif_transpose(image)
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+                image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                image.save(temp_path, format="PNG", optimize=True)
+            # Readers only ever see a complete thumbnail file.
+            os.replace(temp_path, target)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="failed to create thumbnail") from exc
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
     return target
 
 
@@ -93,6 +126,7 @@ def get_thumbnail_response(relative_path: str) -> FileResponse:
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "*",
+        "Cache-Control": IMMUTABLE_CACHE_CONTROL,
     }
     return FileResponse(ensure_thumbnail(relative_path), headers=headers)
 

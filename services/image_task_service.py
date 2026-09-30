@@ -736,7 +736,9 @@ class ImageTaskService:
             role=str(identity.get("role") or ""),
             key_name=str(identity.get("name") or ""),
         )
-        self._update_task(key, status=TASK_STATUS_RUNNING, error="")
+        # Restart recovery treats queued and running alike, so the running
+        # transition does not need its own full task-file rewrite.
+        self._update_task(key, persist=False, status=TASK_STATUS_RUNNING, error="")
         # 创建进度回调，每个步骤完成后更新任务状态
         def progress_callback(step: str) -> None:
             updates: dict[str, Any] = {"progress": step}
@@ -1103,7 +1105,7 @@ class ImageTaskService:
         """后台线程：继续轮询已有 conversation_id 的图片结果。"""
         started = submitted_wall
         handler_queue_ms = max(0, int((time.perf_counter() - submitted_perf) * 1000))
-        self._update_task(key, status=TASK_STATUS_RUNNING)
+        self._update_task(key, persist=False, status=TASK_STATUS_RUNNING)
         backend = None
         with self._lock:
             request_payload = dict(self._tasks.get(key) or {})
