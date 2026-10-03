@@ -58,6 +58,7 @@ _MANAGED_TOP_LEVEL_FIELDS = (
     "image_poll_initial_wait_secs",
     "image_poll_interval_secs",
     "image_account_concurrency",
+    "image_account_cooldown_secs",
     "account_processing_concurrency",
     "image_account_retry_enabled",
     "image_upscale_enabled",
@@ -247,6 +248,7 @@ _FIELD_SPECS: dict[str, dict[str, Any]] = {
     "image_poll_initial_wait_secs": _numeric_field_metadata("image_poll_initial_wait_secs"),
     "image_poll_interval_secs": _numeric_field_metadata("image_poll_interval_secs"),
     "image_account_concurrency": _numeric_field_metadata("image_account_concurrency"),
+    "image_account_cooldown_secs": _numeric_field_metadata("image_account_cooldown_secs"),
     "account_processing_concurrency": _numeric_field_metadata("account_processing_concurrency"),
     "image_account_retry_enabled": _field_metadata(True),
     "image_upscale_enabled": _field_metadata(False),
@@ -519,6 +521,10 @@ class SettingsManagementService:
             image_account_concurrency=normalize_integer_setting(
                 "image_account_concurrency",
                 effective.get("image_account_concurrency"),
+            ),
+            image_account_cooldown_secs=normalize_integer_setting(
+                "image_account_cooldown_secs",
+                effective.get("image_account_cooldown_secs"),
             ),
             account_processing_concurrency=normalize_integer_setting(
                 "account_processing_concurrency",

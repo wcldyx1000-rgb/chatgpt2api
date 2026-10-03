@@ -39,6 +39,7 @@
               :image-poll-initial-wait-field="imagePollInitialWaitField"
               :image-poll-interval-field="imagePollIntervalField"
               :image-account-concurrency-field="imageAccountConcurrencyField"
+              :image-account-cooldown-field="imageAccountCooldownField"
               :account-processing-concurrency-field="accountProcessingConcurrencyField"
             />
 
@@ -571,6 +572,14 @@ const imageAccountConcurrencyField = useNumberSettingField(
   },
   { integer: true, metadata: () => fieldMetadata('image_account_concurrency') },
 )
+const imageAccountCooldownField = useNumberSettingField(
+  () => localSettings.value?.image_account_cooldown_secs,
+  (value) => {
+    if (!localSettings.value) return
+    localSettings.value.image_account_cooldown_secs = value
+  },
+  { integer: true, metadata: () => fieldMetadata('image_account_cooldown_secs') },
+)
 const accountProcessingConcurrencyField = useNumberSettingField(
   () => localSettings.value?.account_processing_concurrency,
   (value) => {
@@ -632,6 +641,7 @@ const numberSettingFields = [
   imagePollInitialWaitField,
   imagePollIntervalField,
   imageAccountConcurrencyField,
+  imageAccountCooldownField,
   accountProcessingConcurrencyField,
   imageMaxAccountAttemptsField,
   imageSettleSecondsField,

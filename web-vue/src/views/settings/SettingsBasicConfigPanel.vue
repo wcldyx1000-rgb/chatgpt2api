@@ -42,6 +42,13 @@
           <SettingsNumberInput :field="imageAccountConcurrencyField" />
         </FormField>
 
+        <FormField label="单账号图片间隔">
+          <template #label-extra>
+            <HelpTip text="单位秒。同一账号的上一次图片请求结束后，至少间隔这么久才分配下一次，避免单个账号使用过密；所有账号都在间隔中时新请求排队等待。默认 30，0 表示不限制，最大 600。" />
+          </template>
+          <SettingsNumberInput :field="imageAccountCooldownField" />
+        </FormField>
+
         <FormField label="账号批量任务并发">
           <template #label-extra>
             <HelpTip text="控制账号批量任务的最大并发数。刷新 AT、同步账号与额度、导入核验和后台复查按账号占用并发；启用、禁用、重置、删除和批量保存按整个批次占用一个并发。默认 30，可设置为 1–100；图片生成并发单独设置。" />
@@ -116,6 +123,7 @@ const props = defineProps<{
   imagePollInitialWaitField: NumberSettingField
   imagePollIntervalField: NumberSettingField
   imageAccountConcurrencyField: NumberSettingField
+  imageAccountCooldownField: NumberSettingField
   accountProcessingConcurrencyField: NumberSettingField
 }>()
 

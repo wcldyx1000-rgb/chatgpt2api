@@ -166,6 +166,8 @@ class AccountService:
         self._accounts = self._load_accounts()
         self._account_snapshot_checked_at = time.monotonic()
         self._image_inflight: dict[str, int] = {}
+        # Schedule key -> monotonic time the account's last image request ended.
+        self._image_released_at: dict[str, float] = {}
         self._image_failure_refresh_lock = Lock()
         self._image_failure_refresh_active: set[str] = set()
         self._image_failure_refresh_active_scopes: dict[str, str] = {}
@@ -718,11 +720,19 @@ class AccountService:
         # Snapshot reloads run often, so they only prune once stale entries could
         # outnumber live accounts; explicit removals always prune. A leftover
         # entry is harmless: the clock and lead cap bound where it can restart.
-        if not force and max(len(self._image_scheduler), len(self._text_scheduler)) <= len(self._accounts):
+        tracked = max(
+            len(self._image_scheduler),
+            len(self._text_scheduler),
+            len(self._image_released_at),
+        )
+        if not force and tracked <= len(self._accounts):
             return
         live_keys = {self._schedule_key(token, item) for token, item in self._accounts.items()}
         self._image_scheduler.prune(live_keys)
         self._text_scheduler.prune(live_keys)
+        self._image_released_at = {
+            key: value for key, value in self._image_released_at.items() if key in live_keys
+        }
 
     def _restore_accounts_after_save_error(self) -> None:
         fallback = deepcopy(self._persisted_accounts)
@@ -2018,11 +2028,27 @@ class AccountService:
                         resolved_excluded_tokens,
                     )
                 max_concurrency = max(1, int(config.image_account_concurrency or 1))
-                tokens = [
-                    token
-                    for token in ready_tokens
-                    if int(self._image_inflight.get(token, 0)) < max_concurrency
-                ]
+                cooldown = float(config.image_account_cooldown_secs or 0)
+                now = time.monotonic()
+                cooldown_wait: float | None = None
+                tokens = []
+                for token in ready_tokens:
+                    if int(self._image_inflight.get(token, 0)) >= max_concurrency:
+                        continue
+                    if cooldown > 0:
+                        # Pace each account like a person would: no new image
+                        # request until the cooldown after its last one ended.
+                        released_at = self._image_released_at.get(
+                            self._schedule_key(token, self._accounts.get(token))
+                        )
+                        if released_at is not None:
+                            ready_in = released_at + cooldown - now
+                            if ready_in > 0:
+                                cooldown_wait = (
+                                    ready_in if cooldown_wait is None else min(cooldown_wait, ready_in)
+                                )
+                                continue
+                    tokens.append(token)
                 access_token = self._pick_image_token_locked(
                     tokens,
                     pool_tokens,
@@ -2035,9 +2061,12 @@ class AccountService:
                 if access_token:
                     self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
                     return access_token
-                self._image_slot_condition.wait(
-                    timeout=min(1.0, remaining) if remaining is not None else 1.0
-                )
+                wait_timeout = 1.0
+                if cooldown_wait is not None:
+                    wait_timeout = min(wait_timeout, cooldown_wait)
+                if remaining is not None:
+                    wait_timeout = min(wait_timeout, remaining)
+                self._image_slot_condition.wait(timeout=max(wait_timeout, 0.001))
             # The wait can outlive the account snapshot TTL. Refresh outside the
             # account lock before considering another candidate so a remote delete
             # or disable cannot be leased from the stale in-memory view.
@@ -2100,6 +2129,9 @@ class AccountService:
             self._image_inflight.pop(access_token, None)
         else:
             self._image_inflight[access_token] = current_inflight - 1
+        account = self._accounts.get(access_token)
+        if account is not None:
+            self._image_released_at[self._schedule_key(access_token, account)] = time.monotonic()
 
     def get_available_access_token(
             self,

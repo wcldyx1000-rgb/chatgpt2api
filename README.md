@@ -205,6 +205,7 @@ curl http://localhost:3000/v1/images/generations \
 | `CHATGPT2API_THREAD_TOKENS`      | `120`        | 后端同步工作线程并发容量，只要求正整数且不设固定最高值；账号、代理和上游仍有各自并发限制 |
 | `account_processing_concurrency` | `30`         | 账号导入、刷新、同步和批量处理容量                                                       |
 | `image_account_concurrency`      | `1`          | 单账号图片并发上限，可设置为 1–3                                                         |
+| `image_account_cooldown_secs`    | `30`         | 同一账号上一次图片请求结束后再次分配的最小间隔（秒），0 表示不限制，最大 600              |
 | `image_stream_timeout_secs`      | `80`         | 图片上游 SSE / HTTP 流最长等待时间                                                       |
 | `image_poll_timeout_secs`        | `60`         | 图片结果解析与轮询最长等待时间                                                           |
 | `log_retention_hours`            | `24`         | 调用日志自动保留小时数                                                                   |

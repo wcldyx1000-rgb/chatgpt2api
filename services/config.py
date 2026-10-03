@@ -575,6 +575,14 @@ class ConfigStore:
         )
 
     @property
+    def image_account_cooldown_secs(self) -> int:
+        """Minimum gap between one image request ending on an account and the next starting."""
+        return normalize_integer_setting(
+            "image_account_cooldown_secs",
+            self.data.get("image_account_cooldown_secs"),
+        )
+
+    @property
     def image_account_retry_enabled(self) -> bool:
         self.reload_if_changed()
         return _normalize_bool(self.data.get("image_account_retry_enabled"), True)
@@ -720,6 +728,7 @@ class ConfigStore:
             data["image_poll_interval_secs"] = self.image_poll_interval_secs
             data["image_poll_initial_wait_secs"] = self.image_poll_initial_wait_secs
             data["image_account_concurrency"] = self.image_account_concurrency
+            data["image_account_cooldown_secs"] = self.image_account_cooldown_secs
             data["account_processing_concurrency"] = self.account_processing_concurrency
             data["image_account_retry_enabled"] = self.image_account_retry_enabled
             data["image_upscale_enabled"] = self.image_upscale_enabled
