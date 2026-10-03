@@ -19,6 +19,7 @@ from services.account_credentials import (
     decode_access_token_payload,
     project_upstream_credential_availability,
 )
+from services.account_scheduler import WeightedFairScheduler
 from services.account_processing import (
     account_processing_batch,
     account_processing_slot,
@@ -118,6 +119,9 @@ class AccountService:
     _REFRESH_PROGRESS_EVENT_LIMIT = ACCOUNT_OPERATION_EVENT_LIMIT
     _STORAGE_MUTATION_MAX_ATTEMPTS = 4
     _ACCOUNT_SNAPSHOT_TTL_SECONDS = 5.0
+    # A healthy account confirmed by a remote check this recently is leased for
+    # image generation without another get_user_info round trip.
+    _IMAGE_PREFLIGHT_FRESH_SECONDS = 10 * 60
     _GIT_ACCOUNT_SNAPSHOT_TTL_SECONDS = 60.0
     # Operational totals only; resettable state such as invalid_count stays LWW.
     _ADDITIVE_ACCOUNT_COUNTER_FIELDS = frozenset({"success", "fail"})
@@ -155,7 +159,8 @@ class AccountService:
         self._oauth_refresh_flights: dict[_CredentialGeneration, Future[str]] = {}
         self._image_slot_condition = Condition(self._lock)
         self._account_snapshot_refresh_lock = Lock()
-        self._index = 0
+        self._image_scheduler = WeightedFairScheduler()
+        self._text_scheduler = WeightedFairScheduler()
         self._persisted_accounts: dict[str, dict] = {}
         self._accounts_revision = ""
         self._accounts = self._load_accounts()
@@ -408,7 +413,6 @@ class AccountService:
         persisted_accounts: dict[str, dict],
         revision: str,
         snapshot_checked: bool = True,
-        preserve_index: bool = False,
     ) -> None:
         token_rotations = self._passive_token_rotations_locked(accounts)
         self._accounts = accounts
@@ -416,8 +420,7 @@ class AccountService:
         self._accounts_revision = revision
         for new_token, alias_sources in token_rotations:
             self._move_account_runtime_token_locked(new_token, alias_sources)
-        if not preserve_index:
-            self._index = self._index % len(self._accounts) if self._accounts else 0
+        self._prune_account_schedulers_locked()
         if snapshot_checked:
             self._account_snapshot_checked_at = time.monotonic()
         self._image_slot_condition.notify_all()
@@ -709,7 +712,17 @@ class AccountService:
             for source, target in self._token_aliases.items()
             if source not in removed_tokens and target not in removed_tokens
         }
-        self._index = self._index % len(self._accounts) if self._accounts else 0
+        self._prune_account_schedulers_locked(force=True)
+
+    def _prune_account_schedulers_locked(self, *, force: bool = False) -> None:
+        # Snapshot reloads run often, so they only prune once stale entries could
+        # outnumber live accounts; explicit removals always prune. A leftover
+        # entry is harmless: the clock and lead cap bound where it can restart.
+        if not force and max(len(self._image_scheduler), len(self._text_scheduler)) <= len(self._accounts):
+            return
+        live_keys = {self._schedule_key(token, item) for token, item in self._accounts.items()}
+        self._image_scheduler.prune(live_keys)
+        self._text_scheduler.prune(live_keys)
 
     def _restore_accounts_after_save_error(self) -> None:
         fallback = deepcopy(self._persisted_accounts)
@@ -721,14 +734,12 @@ class AccountService:
                 persisted_accounts=fallback,
                 revision=self._accounts_revision,
                 snapshot_checked=False,
-                preserve_index=True,
             )
         else:
             self._apply_account_view_locked(
                 loaded,
                 persisted_accounts=loaded,
                 revision=revision,
-                preserve_index=True,
             )
 
     def _save_accounts(
@@ -1874,24 +1885,91 @@ class AccountService:
                and token not in excluded
         ]
 
-    def _list_available_candidate_tokens(
-            self,
-            excluded_tokens: set[str] | None = None,
-            plan_type: str | None = None,
-            source_type: str | None = None,
-            plan_types: set[str] | tuple[str, ...] | None = None,
-    ) -> list[str]:
-        max_concurrency = max(1, int(config.image_account_concurrency or 1))
-        return [
-            token
-            for token in self._list_ready_candidate_tokens(
-                excluded_tokens,
-                plan_type,
-                source_type,
-                plan_types,
-            )
-            if int(self._image_inflight.get(token, 0)) < max_concurrency
-        ]
+    @staticmethod
+    def _schedule_key(access_token: str, account: dict | None) -> str:
+        # management_id survives access token rotation, so a refreshed account
+        # keeps its place in the rotation instead of re-entering as a new one.
+        return str((account or {}).get("management_id") or access_token)
+
+    # No account weighs more than this multiple of a typical account, so one
+    # account reporting a huge quota cannot absorb the whole pool's traffic.
+    _IMAGE_SCHEDULE_MAX_WEIGHT_RATIO = 4.0
+
+    def _image_schedule_weights_locked(self, tokens: list[str]) -> dict[str, float]:
+        """Estimate each pool member's remaining image quota as a scheduling weight.
+
+        Known quota is used as-is. Accounts whose quota upstream does not report
+        count as a typical account (median of known quotas); unlimited plans
+        count as the largest known quota. Every weight is capped at a multiple
+        of the typical account. Accounts drained to zero by local accounting
+        rank last until a remote check confirms their quota again.
+        """
+        known_by_token: dict[str, float] = {}
+        for token in tokens:
+            account = self._accounts.get(token)
+            if account and not account.get("image_quota_unknown"):
+                quota = int(account.get("quota") or 0)
+                if quota > 0:
+                    known_by_token[token] = float(quota)
+        known = sorted(known_by_token.values())
+        typical = known[len(known) // 2] if known else 1.0
+        ceiling = typical * self._IMAGE_SCHEDULE_MAX_WEIGHT_RATIO
+        largest = min(known[-1], ceiling) if known else typical
+        weights: dict[str, float] = {}
+        for token in tokens:
+            weight = known_by_token.get(token)
+            if weight is None:
+                account = self._accounts.get(token) or {}
+                if self._is_unlimited_image_quota_account(account):
+                    weight = largest
+                elif self._quota_estimated_empty(account):
+                    weight = typical / 10.0
+                else:
+                    weight = typical
+            weights[token] = max(min(weight, ceiling), 0.01)
+        return weights
+
+    @classmethod
+    def _quota_estimated_empty(cls, account: dict) -> bool:
+        """Local accounting drained the quota after the last remote check."""
+        empty_at = cls._parse_time(account.get("last_quota_estimated_empty_at"))
+        if empty_at is None:
+            return False
+        checked_at = cls._parse_time(account.get("last_remote_checked_at"))
+        return checked_at is None or empty_at >= checked_at
+
+    def _pick_image_token_locked(
+        self,
+        tokens: list[str],
+        pool_tokens: list[str],
+        *,
+        pool: tuple,
+    ) -> str:
+        if not tokens:
+            return ""
+        weights = self._image_schedule_weights_locked(pool_tokens)
+        available = set(tokens)
+        by_key: dict[str, str] = {}
+        members: list[str] = []
+        candidates: list[tuple[str, float, int]] = []
+        for token in pool_tokens:
+            key = self._schedule_key(token, self._accounts.get(token))
+            members.append(key)
+            if token in available:
+                by_key[key] = token
+                candidates.append((key, weights[token], int(self._image_inflight.get(token, 0))))
+        picked = self._image_scheduler.pick(candidates, members=members, pool=pool)
+        return by_key.get(picked or "", "")
+
+    def _penalize_image_account_locked(self, access_token: str) -> None:
+        account = self._accounts.get(access_token)
+        if account is None:
+            return
+        tokens = self._list_ready_candidate_tokens()
+        if access_token not in tokens:
+            tokens.append(access_token)
+        weight = self._image_schedule_weights_locked(tokens)[access_token]
+        self._image_scheduler.penalize(self._schedule_key(access_token, account), weight)
 
     def _acquire_next_candidate_token(
             self,
@@ -1921,27 +1999,40 @@ class AccountService:
                     for token in (excluded_tokens or set())
                     if token
                 }
-                if not self._list_ready_candidate_tokens(
-                    resolved_excluded_tokens,
+                # The whole filtered pool, including busy and excluded accounts,
+                # anchors the scheduler clock and the quota weights.
+                pool_tokens = self._list_ready_candidate_tokens(
+                    None,
                     plan_type,
                     source_type,
                     plan_types,
-                ):
+                )
+                ready_tokens = [
+                    token for token in pool_tokens if token not in resolved_excluded_tokens
+                ]
+                if not ready_tokens:
                     raise self._no_ready_candidate_error(
                         plan_type,
                         source_type,
                         plan_types,
                         resolved_excluded_tokens,
                     )
-                tokens = self._list_available_candidate_tokens(
-                    resolved_excluded_tokens,
-                    plan_type,
-                    source_type,
-                    plan_types,
+                max_concurrency = max(1, int(config.image_account_concurrency or 1))
+                tokens = [
+                    token
+                    for token in ready_tokens
+                    if int(self._image_inflight.get(token, 0)) < max_concurrency
+                ]
+                access_token = self._pick_image_token_locked(
+                    tokens,
+                    pool_tokens,
+                    pool=(
+                        plan_type or "",
+                        source_type or "",
+                        tuple(sorted(plan_types or ())),
+                    ),
                 )
-                if tokens:
-                    access_token = tokens[self._index % len(tokens)]
-                    self._index += 1
+                if access_token:
                     self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
                     return access_token
                 self._image_slot_condition.wait(
@@ -2059,11 +2150,14 @@ class AccountService:
                     "image request deadline exceeded before remote account validation",
                 )
             try:
-                account = self.fetch_remote_info(
-                    access_token,
-                    "get_available_access_token",
-                    image_scope=True,
-                )
+                if self._image_preflight_is_fresh(access_token):
+                    account = self._lease_without_preflight(access_token)
+                else:
+                    account = self.fetch_remote_info(
+                        access_token,
+                        "get_available_access_token",
+                        image_scope=True,
+                    )
             except Exception:
                 # 预检失败（上游波动/网络/401 等）：这个号这次不可用，换下一个。
                 # 401 已在 fetch_remote_info 内部走异常处理，这里不再二次分类。
@@ -2108,13 +2202,47 @@ class AccountService:
             f"no image account available after {len(attempted_tokens)} attempts",
         )
 
+    def _image_preflight_is_fresh(self, access_token: str) -> bool:
+        """Whether a recent remote check makes another preflight redundant.
+
+        Skipping is only safe while cross-account retry is enabled: if the
+        account went bad since its last check, the generation failure marks it
+        for verification and the request moves on to another account.
+        """
+        if not config.image_account_retry_enabled:
+            return False
+        with self._lock:
+            account = self._accounts.get(self._resolve_access_token_locked(access_token))
+            if not account or not self._is_image_account_available(account):
+                return False
+            if account.get("last_remote_check_result") != "ok" or account.get("pending_auth_scope"):
+                return False
+            if self._quota_estimated_empty(account):
+                return False
+            checked_at = self._parse_time(account.get("last_remote_checked_at"))
+        if checked_at is None:
+            return False
+        age = (datetime.now(timezone.utc) - checked_at).total_seconds()
+        return 0 <= age <= self._IMAGE_PREFLIGHT_FRESH_SECONDS
+
+    def _lease_without_preflight(self, access_token: str) -> dict | None:
+        """Local half of the preflight: renew an expiring access token only."""
+        active_token = self.ensure_access_token(
+            access_token,
+            event="get_available_access_token:preflight",
+            image_scope=True,
+        )
+        with self._lock:
+            account = self._accounts.get(self._resolve_access_token_locked(active_token))
+            return dict(account) if account else None
+
     def get_text_access_token(self, excluded_tokens: set[str] | None = None) -> str:
         self._refresh_accounts_snapshot_if_stale()
         attempted = set(excluded_tokens or set())
         while True:
             with self._lock:
-                candidates = [
-                    token
+                pool = {
+                    self._schedule_key(token, account): token
                     for account in self._accounts.values()
                     if self._is_account_selectable(
                         account,
@@ -2122,12 +2250,14 @@ class AccountService:
                         allow_image_pending=True,
                     )
                        and (token := account.get("access_token") or "")
-                       and token not in attempted
+                }
+                candidates = [
+                    (key, 1.0, 0) for key, token in pool.items() if token not in attempted
                 ]
                 if not candidates:
                     return ""
-                access_token = candidates[self._index % len(candidates)]
-                self._index += 1
+                picked = self._text_scheduler.pick(candidates, members=pool)
+                access_token = pool[picked]
             attempted.add(access_token)
             try:
                 return self.ensure_access_token(access_token, event="get_text_access_token")
@@ -4102,6 +4232,8 @@ class AccountService:
                         next_item["status"] = "正常"
                         next_item["image_quota_unknown"] = True
                         next_item["restore_at"] = None
+                if not success and failure is not None and failure.switch_account:
+                    self._penalize_image_account_locked(access_token)
                 if not success and failure is not None and failure.verify_account:
                     next_item["fail"] = int(next_item.get("fail") or 0) + 1
                     self._mark_remote_check_pending(

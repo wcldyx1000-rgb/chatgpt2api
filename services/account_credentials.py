@@ -4,6 +4,7 @@ import base64
 import json
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 
@@ -45,6 +46,9 @@ def _positive_timestamp(claims: dict[str, object], name: str) -> int | None:
     return value if value > 0 else None
 
 
+# Account selection projects every pool member's lifecycle on each lease; the
+# claims of a given token never change, so decode each token once.
+@lru_cache(maxsize=8192)
 def access_token_timestamps(access_token: str) -> tuple[int | None, int | None]:
     claims = decode_access_token_payload(access_token)
     return _positive_timestamp(claims, "iat"), _positive_timestamp(claims, "exp")
