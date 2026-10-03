@@ -51,6 +51,36 @@ class DashboardOperationsView(BaseModel):
     active_requests: int = Field(ge=0)
 
 
+class AccountPoolWarningView(BaseModel):
+    code: str
+    tone: Literal["warning", "error"]
+    message: str
+
+
+class AccountPoolHealthMetricsView(BaseModel):
+    total_accounts: int = Field(ge=0)
+    ready_accounts: int = Field(ge=0)
+    danger_accounts: int = Field(ge=0)
+    warning_accounts: int = Field(ge=0)
+    demand_1h: int = Field(ge=0)
+    capacity_1h: int = Field(ge=0)
+    utilization: float | None = Field(default=None, ge=0)
+    waits_1h: int = Field(ge=0)
+    avg_wait_seconds: float = Field(ge=0)
+    timeouts_1h: int = Field(ge=0)
+    avg_hold_seconds: float = Field(ge=0)
+    observed_seconds: int = Field(ge=0)
+
+
+class AccountPoolHealthView(BaseModel):
+    level: Literal["healthy", "warning", "danger"]
+    label: str
+    tone: Literal["success", "warning", "error"]
+    warnings: list[AccountPoolWarningView]
+    suggested_additional_accounts: int = Field(ge=0)
+    metrics: AccountPoolHealthMetricsView
+
+
 class DashboardAccountView(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -67,6 +97,7 @@ class DashboardAccountView(BaseModel):
     total_fail: int = 0
     by_type: dict[str, int] = Field(default_factory=dict)
     healthy: bool = False
+    pool_health: AccountPoolHealthView
 
 
 class DashboardTotalsView(BaseModel):

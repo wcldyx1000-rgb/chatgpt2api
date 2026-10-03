@@ -36,6 +36,7 @@ from services.account_operation_events import (
     normalize_account_operation_events,
     project_account_operation_presentation,
 )
+from services.account_health import account_health_report, health_matches_filter
 from services.account_import_job import RemoteImportJobConflictError
 from services.account_test_service import account_test_service
 from services.account_service import account_service
@@ -73,6 +74,7 @@ class AccountSelectionScope(BaseModel):
     keyword: str = ""
     status: str = "all"
     group_id: str = "all"
+    health: Literal["all", "risk", "warning", "danger"] = "all"
 
 
 class AccountSelectionPreviewRequest(BaseModel):
@@ -375,9 +377,21 @@ def _account_unlimited_quota(account: dict[str, Any]) -> bool:
     return bool(checker(account)) if callable(checker) else False
 
 
+def _account_health(
+        account: dict[str, Any],
+        health_by_token: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    # Health compares the account with the rest of the pool, so a single row
+    # still evaluates the whole pool.
+    if health_by_token is None:
+        health_by_token, _pool = account_health_report()
+    return health_by_token.get(_clean_text(account.get("access_token")))
+
+
 def _account_for_api(
         account: dict[str, Any],
         group_names: dict[str, str] | None = None,
+        health_by_token: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     group_id = _clean_text(account.get("group_id"))
     return account_row(
@@ -385,6 +399,7 @@ def _account_for_api(
         available=_account_available(account),
         unlimited_quota=_account_unlimited_quota(account),
         group_name=(group_names or {}).get(group_id, group_id),
+        health=_account_health(account, health_by_token),
     )
 
 
@@ -396,6 +411,7 @@ def _account_detail_for_api(account: dict[str, Any]) -> dict[str, Any]:
         available=_account_available(account),
         unlimited_quota=_account_unlimited_quota(account),
         group_name=group_names.get(group_id, group_id),
+        health=_account_health(account, None),
     )
 
 
@@ -626,8 +642,9 @@ def _project_accounts(account_ids: list[str]) -> list[dict[str, Any]]:
         return []
     accounts_by_id = _accounts_by_id()
     group_names = _account_group_names()
+    health_by_token, _pool = account_health_report()
     return [
-        _account_for_api(accounts_by_id[account_id], group_names)
+        _account_for_api(accounts_by_id[account_id], group_names, health_by_token)
         for account_id in requested_ids
         if account_id in accounts_by_id
     ]
@@ -986,7 +1003,11 @@ def _filtered_accounts(
         keyword: str,
         status: str,
         group_id: str,
+        health: str = "all",
+        health_by_token: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    if health != "all" and health_by_token is None:
+        health_by_token, _pool = account_health_report(accounts)
     return [
         account
         for account in accounts
@@ -995,6 +1016,15 @@ def _filtered_accounts(
             keyword=keyword,
             status=status,
             group_id=group_id,
+        )
+        and (
+            health == "all"
+            or health_matches_filter(
+                ((health_by_token or {}).get(_clean_text(account.get("access_token"))) or {}).get(
+                    "health_level", ""
+                ),
+                health,
+            )
         )
     ]
 
@@ -1009,6 +1039,7 @@ def _account_selection_members(
             keyword=selection.keyword,
             status=selection.status,
             group_id=selection.group_id,
+            health=selection.health,
         )
 
     members: list[tuple[str, str]] = []
@@ -1093,13 +1124,17 @@ def _accounts_page(
         keyword: str,
         status: str,
         group_id: str,
+        health: str = "all",
 ) -> dict[str, Any]:
     items = account_service.list_accounts()
+    health_by_token, pool_health = account_health_report(items)
     filtered = _filtered_accounts(
         items,
         keyword=keyword,
         status=status,
         group_id=group_id,
+        health=health,
+        health_by_token=health_by_token,
     )
     safe_page = max(1, page)
     safe_page_size = max(1, min(page_size, 500))
@@ -1107,9 +1142,13 @@ def _accounts_page(
     end = start + safe_page_size
     group_names = _account_group_names()
     return {
-        "items": [_account_for_api(item, group_names) for item in filtered[start:end]],
+        "items": [
+            _account_for_api(item, group_names, health_by_token)
+            for item in filtered[start:end]
+        ],
         "total": len(filtered),
         "all_total": len(items),
+        "pool_health": pool_health,
         "page": safe_page,
         "page_size": safe_page_size,
     }
@@ -1212,6 +1251,7 @@ def create_router() -> APIRouter:
             keyword: str = "",
             status: str = "all",
             group_id: str = "all",
+            health: Literal["all", "risk", "warning", "danger"] = "all",
             authorization: str | None = Header(default=None),
     ):
         require_admin(authorization)
@@ -1221,6 +1261,7 @@ def create_router() -> APIRouter:
             keyword=keyword,
             status=status,
             group_id=group_id,
+            health=health,
         )
 
     @router.post("/api/accounts/selection-preview")

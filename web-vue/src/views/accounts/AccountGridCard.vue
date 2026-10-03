@@ -35,6 +35,7 @@
         :item="item"
         @copy-credential="emit('copy-credential', item, $event)"
       />
+      <AccountHealthStatus :item="item" />
     </div>
 
     <KeyValueList
@@ -64,6 +65,7 @@ import { Checkbox, KeyValueList, MetaChip, StatusDetailPill } from 'nanocat-ui'
 import AccountActionButtons from '@/components/ai/AccountActionButtons.vue'
 import type { Account } from '@/api/accounts'
 import AccountCredentialStatus from './AccountCredentialStatus.vue'
+import AccountHealthStatus from './AccountHealthStatus.vue'
 import {
   accountDetailItems,
   accountPrimaryText,

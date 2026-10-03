@@ -35,6 +35,9 @@
       />
     </td>
     <td class="py-3 pr-5 align-middle">
+      <AccountHealthStatus :item="item" />
+    </td>
+    <td class="py-3 pr-5 align-middle">
       <p class="max-w-[16rem] truncate text-sm font-medium text-foreground">{{ accountPrimaryText(item) }}</p>
       <p class="mt-1 max-w-[16rem] truncate font-mono text-xs text-muted-foreground">{{ accountSecondaryText(item) }}</p>
     </td>
@@ -79,6 +82,7 @@ import AccountActionButtons from '@/components/ai/AccountActionButtons.vue'
 import QuotaBadge from '@/components/ai/QuotaBadge.vue'
 import type { Account } from '@/api/accounts'
 import AccountCredentialStatus from './AccountCredentialStatus.vue'
+import AccountHealthStatus from './AccountHealthStatus.vue'
 import {
   accountCreatedText,
   accountPrimaryText,

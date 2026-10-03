@@ -237,6 +237,7 @@ def account_row(
     available: bool,
     unlimited_quota: bool,
     group_name: str = "",
+    health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     access_token = _text(account.get("access_token"))
     account_id = _text(account.get("management_id"))
@@ -310,6 +311,19 @@ def account_row(
         "last_remote_checked_at": _timestamp_seconds(account.get("last_remote_checked_at")),
         "created_at": _timestamp_seconds(account.get("created_at")),
         "last_used_at": _timestamp_seconds(account.get("last_used_at")),
+        **_health_fields(health),
+    }
+
+
+def _health_fields(health: dict[str, Any] | None) -> dict[str, Any]:
+    health = health or {}
+    return {
+        "health_level": health.get("health_level") or "healthy",
+        "health_label": health.get("health_label") or "健康",
+        "health_tone": health.get("health_tone") or "success",
+        "health_reasons": list(health.get("health_reasons") or []),
+        "recent_uses_1h": int(health.get("recent_uses_1h") or 0),
+        "recent_uses_24h": int(health.get("recent_uses_24h") or 0),
     }
 
 
@@ -319,6 +333,7 @@ def account_detail(
     available: bool,
     unlimited_quota: bool,
     group_name: str = "",
+    health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         **account_row(
@@ -326,6 +341,7 @@ def account_detail(
             available=available,
             unlimited_quota=unlimited_quota,
             group_name=group_name,
+            health=health,
         ),
         "configuration": {
             "type": _text(account.get("type")),

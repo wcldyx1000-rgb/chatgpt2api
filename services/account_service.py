@@ -20,6 +20,7 @@ from services.account_credentials import (
     project_upstream_credential_availability,
 )
 from services.account_scheduler import WeightedFairScheduler
+from services.account_usage import ImageUsageTracker
 from services.account_processing import (
     account_processing_batch,
     account_processing_slot,
@@ -168,6 +169,7 @@ class AccountService:
         self._image_inflight: dict[str, int] = {}
         # Schedule key -> monotonic time the account's last image request ended.
         self._image_released_at: dict[str, float] = {}
+        self._image_usage = ImageUsageTracker()
         self._image_failure_refresh_lock = Lock()
         self._image_failure_refresh_active: set[str] = set()
         self._image_failure_refresh_active_scopes: dict[str, str] = {}
@@ -724,6 +726,7 @@ class AccountService:
             len(self._image_scheduler),
             len(self._text_scheduler),
             len(self._image_released_at),
+            len(self._image_usage),
         )
         if not force and tracked <= len(self._accounts):
             return
@@ -733,6 +736,7 @@ class AccountService:
         self._image_released_at = {
             key: value for key, value in self._image_released_at.items() if key in live_keys
         }
+        self._image_usage.prune(live_keys)
 
     def _restore_accounts_after_save_error(self) -> None:
         fallback = deepcopy(self._persisted_accounts)
@@ -1989,6 +1993,7 @@ class AccountService:
             plan_types: set[str] | tuple[str, ...] | None = None,
             deadline_monotonic: float | None = None,
     ) -> str:
+        wait_started: float | None = None
         while True:
             with self._image_slot_condition:
                 remaining = (
@@ -1997,6 +2002,9 @@ class AccountService:
                     else None
                 )
                 if remaining is not None and remaining <= 0:
+                    if wait_started is not None:
+                        # Every ready account stayed busy or resting until the deadline.
+                        self._image_usage.record_timeout()
                     raise ImageAccountSelectionError(
                         "deadline_exceeded",
                         "image request deadline exceeded while waiting for an account slot",
@@ -2021,6 +2029,8 @@ class AccountService:
                     token for token in pool_tokens if token not in resolved_excluded_tokens
                 ]
                 if not ready_tokens:
+                    if not resolved_excluded_tokens:
+                        self._image_usage.record_unavailable()
                     raise self._no_ready_candidate_error(
                         plan_type,
                         source_type,
@@ -2060,7 +2070,14 @@ class AccountService:
                 )
                 if access_token:
                     self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
+                    self._image_usage.record_lease(
+                        self._schedule_key(access_token, self._accounts.get(access_token))
+                    )
+                    if wait_started is not None:
+                        self._image_usage.record_wait(time.monotonic() - wait_started)
                     return access_token
+                if wait_started is None:
+                    wait_started = now
                 wait_timeout = 1.0
                 if cooldown_wait is not None:
                     wait_timeout = min(wait_timeout, cooldown_wait)
@@ -2123,15 +2140,19 @@ class AccountService:
             self._release_image_slot_locked(access_token)
             self._image_slot_condition.notify_all()
 
-    def _release_image_slot_locked(self, access_token: str) -> None:
+    def _release_image_slot_locked(self, access_token: str) -> float | None:
+        """Release one image lease; return how long it was held when known."""
         current_inflight = int(self._image_inflight.get(access_token, 0))
         if current_inflight <= 1:
             self._image_inflight.pop(access_token, None)
         else:
             self._image_inflight[access_token] = current_inflight - 1
         account = self._accounts.get(access_token)
-        if account is not None:
-            self._image_released_at[self._schedule_key(access_token, account)] = time.monotonic()
+        if account is None:
+            return None
+        key = self._schedule_key(access_token, account)
+        self._image_released_at[key] = time.monotonic()
+        return self._image_usage.record_release(key)
 
     def get_available_access_token(
             self,
@@ -2441,6 +2462,18 @@ class AccountService:
                 account["image_inflight"] = int(self._image_inflight.get(token, 0))
                 result.append(account)
             return result
+
+    def image_usage_snapshot(self) -> dict:
+        """Runtime image usage per access token plus pool selection pressure."""
+        self._refresh_accounts_snapshot_if_stale()
+        with self._lock:
+            return {
+                "accounts": {
+                    token: self._image_usage.account_stats(self._schedule_key(token, item))
+                    for token, item in self._accounts.items()
+                },
+                "pool": self._image_usage.pool_stats(),
+            }
 
     def list_limited_tokens(self) -> list[str]:
         self._refresh_accounts_snapshot_if_stale()
@@ -4228,11 +4261,19 @@ class AccountService:
         consumed_quota = success if quota_consumed is None else bool(quota_consumed)
         with self._image_slot_condition:
             access_token = self._resolve_access_token_locked(access_token)
-            self._release_image_slot_locked(access_token)
+            held_seconds = self._release_image_slot_locked(access_token)
             try:
                 current = self._accounts.get(access_token)
                 if current is None:
                     return None
+                self._image_usage.record_attempt(
+                    self._schedule_key(access_token, current),
+                    success=success,
+                    account_failure=not success and (failure is None or failure.switch_account),
+                    failure_code=failure.code if failure is not None else "",
+                    status_code=failure.status_code if failure is not None else 0,
+                    held_seconds=held_seconds,
+                )
                 expected_generation = None
                 if expected_access_token is not None and expected_refresh_token is not None:
                     expected_generation = (

@@ -32,6 +32,13 @@
               selected-indicator="none"
               aria-label="账号组筛选"
             />
+            <GroupedSelectMenu
+              v-model="healthFilter"
+              :options="healthFilterOptions"
+              placeholder="健康度"
+              selected-indicator="none"
+              aria-label="账号健康度筛选"
+            />
           </FilterToolbar>
 
           <div class="accounts-toolbar-view">
@@ -105,6 +112,20 @@
         </div>
       </div>
 
+      <AccountPoolHealthNotice :health="poolHealth">
+        <template #action>
+          <Button
+            v-if="poolRiskAccounts > 0 && healthFilter !== 'risk'"
+            size="xs"
+            variant="outline"
+            root-class="shrink-0"
+            @click="healthFilter = 'risk'"
+          >
+            查看风险账号
+          </Button>
+        </template>
+      </AccountPoolHealthNotice>
+
       <PageLoadingState
         v-if="viewMode === 'cards' && loading && visibleAccounts.length === 0"
         title="正在加载账号"
@@ -120,9 +141,9 @@
         loading-title="正在加载账号"
         loading-description="读取账号列表、分组和分页状态。"
         :show-empty="!loading && visibleAccounts.length === 0"
-        :empty-colspan="10"
+        :empty-colspan="11"
         :scroll-class="isWorkspaceLayout ? 'max-h-[min(36rem,60dvh)] lg:max-h-none' : ''"
-        table-class="min-w-[980px] w-full"
+        table-class="min-w-[1040px] w-full"
         head-class="tracking-[0.16em]"
       >
         <template #head>
@@ -139,6 +160,7 @@
               <th class="py-2.5 pr-5">AT / RT</th>
               <th class="py-2.5 pr-5">来源 / 套餐</th>
               <th class="py-2.5 pr-5">状态</th>
+              <th class="py-2.5 pr-5">健康</th>
               <th class="py-2.5 pr-5">账户信息</th>
               <th class="py-2.5 pr-5">创建时间</th>
               <th class="py-2.5 pr-5">图片额度</th>
@@ -771,6 +793,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { Button, Checkbox, EmptyState, GroupedSelectMenu, Input, TableShell, ViewModeSwitch } from 'nanocat-ui'
+import AccountPoolHealthNotice from '@/components/ai/AccountPoolHealthNotice.vue'
 import FilterToolbar from '@/components/ai/FilterToolbar.vue'
 import FloatingActionMenu from '@/components/ai/FloatingActionMenu.vue'
 import FormSection from '@/components/ai/FormSection.vue'
@@ -823,8 +846,11 @@ const {
   keyword,
   statusFilter,
   groupFilter,
+  healthFilter,
+  poolHealth,
   statusFilterOptions,
   groupFilterOptions,
+  healthFilterOptions,
   editingId,
   accounts,
   accountListTotal,
@@ -941,6 +967,9 @@ const {
   bindSelectedAccountsToGroup,
   exportAccounts,
 } = useAccountsPage()
+const poolRiskAccounts = computed(() => (
+  (poolHealth.value?.metrics.danger_accounts ?? 0) + (poolHealth.value?.metrics.warning_accounts ?? 0)
+))
 
 const { listLayoutMode, isWorkspaceLayout } = useListLayoutPreference()
 

@@ -2,6 +2,8 @@ import { computed, ref, toRef } from 'vue'
 import { accountsApi } from '@/api/accounts'
 import type {
   Account,
+  AccountHealthFilter,
+  AccountPoolHealth,
 } from '@/api/accounts'
 import { usePageRuntime } from '@/composables/usePageRuntime'
 import { usePagedQuery } from '@/composables/usePageQuery'
@@ -37,6 +39,8 @@ export function useAccountsPage() {
   const keyword = ref('')
   const statusFilter = ref<AccountStatusFilter>('all')
   const groupFilter = ref('all')
+  const healthFilter = ref<AccountHealthFilter>('all')
+  const poolHealth = ref<AccountPoolHealth | null>(null)
   const pageSize = ref(DEFAULT_PAGE_SIZE)
   const accounts = ref<Account[]>([])
   const accountAllTotal = ref(0)
@@ -56,6 +60,7 @@ export function useAccountsPage() {
       keyword: keyword.value.trim(),
       status: statusFilter.value,
       group_id: groupFilter.value,
+      health: healthFilter.value,
     }),
     resolvePage: (res) => res.page,
     resolvePageCount: (res) => {
@@ -67,6 +72,7 @@ export function useAccountsPage() {
     resolveTotal: (res) => res.total ?? res.accounts?.length ?? 0,
     apply: (res) => {
       accountAllTotal.value = Number(res.all_total ?? 0)
+      poolHealth.value = res.pool_health ?? null
       accounts.value = res.accounts || []
       accountSelection.pruneToCurrentAccounts()
     },
@@ -84,6 +90,12 @@ export function useAccountsPage() {
     { label: '限流', value: 'limited' },
     { label: '异常', value: 'abnormal' },
     { label: '禁用', value: 'disabled' },
+  ] as const
+  const healthFilterOptions = [
+    { label: '全部健康度', value: 'all' },
+    { label: '有风险', value: 'risk' },
+    { label: '危险', value: 'danger' },
+    { label: '注意', value: 'warning' },
   ] as const
 
   const groupFilterOptions = computed(() => [
@@ -103,6 +115,7 @@ export function useAccountsPage() {
     keyword,
     status: statusFilter,
     groupId: groupFilter,
+    health: healthFilter,
   })
   const selectedCount = accountSelection.selectedCount
   const scopedSelectionActive = accountSelection.scopedSelectionActive
@@ -349,6 +362,7 @@ export function useAccountsPage() {
     keyword,
     statusFilter,
     groupFilter,
+    healthFilter,
     pageSizeDefault: DEFAULT_PAGE_SIZE,
     pageSizeOptions: ACCOUNT_PAGE_SIZE_OPTIONS,
     reloadTimerKey: LIST_RELOAD_TIMER_KEY,
@@ -397,8 +411,11 @@ export function useAccountsPage() {
     keyword,
     statusFilter,
     groupFilter,
+    healthFilter,
+    poolHealth,
     statusFilterOptions,
     groupFilterOptions,
+    healthFilterOptions,
     editingId,
     accounts,
     accountListTotal,

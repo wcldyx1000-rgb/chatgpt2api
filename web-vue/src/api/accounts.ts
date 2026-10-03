@@ -13,6 +13,8 @@ export type AccountRefreshTokenStatus = 'valid' | 'missing' | 'invalid'
 export type AccountCredentialAvailability = 'usable' | 'recoverable' | 'unavailable'
 export type AccountPresentationTone = 'neutral' | 'success' | 'warning' | 'error' | 'info'
 export type AccountGroupProxyMode = AccountProxyMode | 'profile'
+export type AccountHealthLevel = 'healthy' | 'warning' | 'danger' | 'idle'
+export type AccountHealthFilter = 'all' | 'risk' | 'warning' | 'danger'
 
 export interface Account {
   id: string
@@ -71,6 +73,40 @@ export interface Account {
   last_remote_checked_at?: number | null
   created_at?: number | null
   last_used_at?: number | null
+  health_level: AccountHealthLevel
+  health_label: string
+  health_tone: AccountPresentationTone
+  health_reasons: string[]
+  recent_uses_1h: number
+  recent_uses_24h: number
+}
+
+export interface AccountPoolWarning {
+  code: string
+  tone: 'warning' | 'error'
+  message: string
+}
+
+export interface AccountPoolHealth {
+  level: 'healthy' | 'warning' | 'danger'
+  label: string
+  tone: 'success' | 'warning' | 'error'
+  warnings: AccountPoolWarning[]
+  suggested_additional_accounts: number
+  metrics: {
+    total_accounts: number
+    ready_accounts: number
+    danger_accounts: number
+    warning_accounts: number
+    demand_1h: number
+    capacity_1h: number
+    utilization: number | null
+    waits_1h: number
+    avg_wait_seconds: number
+    timeouts_1h: number
+    avg_hold_seconds: number
+    observed_seconds: number
+  }
 }
 
 export type AccountProxyProjection = Pick<
@@ -128,6 +164,7 @@ export interface AccountsResponse {
   all_total?: number
   page?: number
   page_size?: number
+  pool_health?: AccountPoolHealth
 }
 
 export interface AccountGroup {
@@ -252,6 +289,7 @@ export type AccountListParams = {
   keyword?: string
   status?: 'all' | AccountStatusCategory
   group_id?: string
+  health?: AccountHealthFilter
 }
 
 export type AccountSelectionScope = {
@@ -261,6 +299,7 @@ export type AccountSelectionScope = {
   keyword?: string
   status?: 'all' | AccountStatusCategory
   group_id?: string
+  health?: AccountHealthFilter
 }
 
 export type AccountSelectionTarget = readonly string[] | AccountSelectionScope
@@ -305,6 +344,7 @@ type BackendAccountsResponse = {
   all_total?: number
   page?: number
   page_size?: number
+  pool_health?: AccountPoolHealth
 }
 
 const STATUS_NORMAL: AccountBackendStatus = '正常'
@@ -407,6 +447,9 @@ function mapAccountsResponse(response: BackendAccountsResponse): AccountsRespons
     all_total: Number.isFinite(Number(response.all_total)) ? Number(response.all_total) : undefined,
     page: Number.isFinite(Number(response.page)) ? Number(response.page) : undefined,
     page_size: Number.isFinite(Number(response.page_size)) ? Number(response.page_size) : undefined,
+    pool_health: response.pool_health && Array.isArray(response.pool_health.warnings)
+      ? response.pool_health
+      : undefined,
   }
 }
 

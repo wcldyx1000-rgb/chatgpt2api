@@ -232,6 +232,7 @@ export function useDashboardPage() {
   ))
   const dashboardRuntime = shallowRef<DashboardResponse['runtime'] | null>(null)
   const dashboardOperations = shallowRef<DashboardResponse['operations'] | null>(null)
+  const dashboardPoolHealth = shallowRef<DashboardAccountStats['pool_health'] | null>(null)
   const dashboardVersion = ref('--')
 
   // 每个图表独立的数据状态
@@ -800,6 +801,7 @@ export function useDashboardPage() {
     dashboardRanges.value = snapshot.ranges
     dashboardRuntime.value = snapshot.runtime
     dashboardOperations.value = snapshot.operations
+    dashboardPoolHealth.value = snapshot.accounts.pool_health
     dashboardVersion.value = snapshot.version
     dashboardDataWarning.value = snapshot.metrics.status === 'degraded'
       ? '统计数据暂未更新，当前展示最近一次可用快照。'
@@ -1039,6 +1041,7 @@ export function useDashboardPage() {
     dashboardRanges,
     dashboardRuntime,
     dashboardOperations,
+    dashboardPoolHealth,
     dashboardDataReady,
     dashboardLoadError,
     retryDashboard,

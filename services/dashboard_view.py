@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from services.account_health import account_health_report
 from services.account_service import account_service
 from services.config import config
 from services.dashboard_metrics_service import (
@@ -11,7 +12,7 @@ from services.runtime_environment_service import snapshot as runtime_environment
 from utils.timezone import beijing_now
 
 
-DASHBOARD_VIEW_SCHEMA_VERSION = 5
+DASHBOARD_VIEW_SCHEMA_VERSION = 6
 
 
 def _image_storage_view() -> dict[str, object]:
@@ -31,6 +32,7 @@ def build_dashboard_view(*, app_version: str) -> dict:
     account_healthy = bool(account_stats.get("active")) or bool(
         account_stats.get("unlimited_quota_count")
     )
+    _health_by_token, pool_health = account_health_report()
     snapshot = dashboard_metrics_service.snapshot_many()
     metrics = snapshot["metrics"]
     ranges = snapshot["ranges"]
@@ -54,6 +56,7 @@ def build_dashboard_view(*, app_version: str) -> dict:
         "accounts": {
             **account_stats,
             "healthy": account_healthy,
+            "pool_health": pool_health,
         },
         "storage": {
             "application_database": application_database,

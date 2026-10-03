@@ -2,6 +2,7 @@ import { computed, ref, type ComputedRef, type Ref } from 'vue'
 
 import type {
   Account,
+  AccountHealthFilter,
   AccountSelectionPreview,
   AccountSelectionScope,
   AccountStatusCategory,
@@ -15,15 +16,16 @@ type AccountSelectionRuntimeOptions = {
   keyword: Ref<string>
   status: Ref<'all' | AccountStatusCategory>
   groupId: Ref<string>
+  health: Ref<AccountHealthFilter>
 }
 
-type FilterSnapshot = Pick<AccountSelectionScope, 'keyword' | 'status' | 'group_id'>
+type FilterSnapshot = Pick<AccountSelectionScope, 'keyword' | 'status' | 'group_id' | 'health'>
 
 export function useAccountSelectionRuntime(options: AccountSelectionRuntimeOptions) {
   const selectionMode = ref<'explicit' | 'filter' | 'all'>('explicit')
   const selectedIds = ref<string[]>([])
   const excludedIds = ref<string[]>([])
-  const filterSnapshot = ref<FilterSnapshot>({ keyword: '', status: 'all', group_id: 'all' })
+  const filterSnapshot = ref<FilterSnapshot>({ keyword: '', status: 'all', group_id: 'all', health: 'all' })
   const selectionRevision = ref(0)
   const authoritativeSelectedCount = ref<number | null>(null)
 
@@ -70,6 +72,7 @@ export function useAccountSelectionRuntime(options: AccountSelectionRuntimeOptio
     return filterSnapshot.value.keyword === options.keyword.value.trim()
       && filterSnapshot.value.status === options.status.value
       && filterSnapshot.value.group_id === options.groupId.value
+      && filterSnapshot.value.health === options.health.value
   })
 
   function pruneToCurrentAccounts() {
@@ -129,6 +132,7 @@ export function useAccountSelectionRuntime(options: AccountSelectionRuntimeOptio
       keyword: options.keyword.value.trim(),
       status: options.status.value,
       group_id: options.groupId.value,
+      health: options.health.value,
     }
     authoritativeSelectedCount.value = options.total.value
     selectionRevision.value += 1

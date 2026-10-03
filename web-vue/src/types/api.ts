@@ -1,3 +1,4 @@
+import type { AccountPoolHealth } from '@/api/accounts'
 // API 类型定义
 
 export type ProxyRuntimeClearanceMode = 'none' | 'manual' | 'flaresolverr'
@@ -325,6 +326,7 @@ export interface DashboardAccountStats {
   total_fail: number
   by_type: Record<string, number>
   healthy: boolean
+  pool_health: AccountPoolHealth
 }
 
 export interface DashboardTotals {

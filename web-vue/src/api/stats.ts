@@ -2,7 +2,7 @@ import apiClient from './client'
 import type { DashboardResponse, DashboardTimeRangeKey } from '@/types/api'
 
 const DASHBOARD_TIME_RANGES: DashboardTimeRangeKey[] = ['24h', '7d', '30d']
-const DASHBOARD_VIEW_SCHEMA_VERSION = 5
+const DASHBOARD_VIEW_SCHEMA_VERSION = 6
 type JsonObject = Record<string, unknown>
 
 function contractError(path: string, expected: string): never {
@@ -227,6 +227,35 @@ function validateAccounts(value: unknown) {
   ].forEach((field) => expectNumber(accounts[field], `response.accounts.${field}`, true))
   expectCountRecord(accounts.by_type, 'response.accounts.by_type')
   expectBoolean(accounts.healthy, 'response.accounts.healthy')
+  validatePoolHealth(accounts.pool_health, 'response.accounts.pool_health')
+}
+
+function validatePoolHealth(value: unknown, path: string) {
+  const health = expectObject(value, path)
+  if (health.level !== 'healthy' && health.level !== 'warning' && health.level !== 'danger') {
+    contractError(`${path}.level`, 'healthy | warning | danger')
+  }
+  expectString(health.label, `${path}.label`)
+  expectString(health.tone, `${path}.tone`)
+  if (!Array.isArray(health.warnings)) contractError(`${path}.warnings`, 'array')
+  health.warnings.forEach((item, index) => {
+    const warning = expectObject(item, `${path}.warnings[${index}]`)
+    expectString(warning.code, `${path}.warnings[${index}].code`)
+    if (warning.tone !== 'warning' && warning.tone !== 'error') {
+      contractError(`${path}.warnings[${index}].tone`, 'warning | error')
+    }
+    expectString(warning.message, `${path}.warnings[${index}].message`)
+  })
+  expectNumber(health.suggested_additional_accounts, `${path}.suggested_additional_accounts`, true)
+  const metrics = expectObject(health.metrics, `${path}.metrics`)
+  ;[
+    'total_accounts', 'ready_accounts', 'danger_accounts', 'warning_accounts', 'demand_1h',
+    'capacity_1h', 'waits_1h', 'timeouts_1h', 'observed_seconds',
+  ].forEach((field) => expectNumber(metrics[field], `${path}.metrics.${field}`, true))
+  ;['avg_wait_seconds', 'avg_hold_seconds'].forEach((field) => (
+    expectNumber(metrics[field], `${path}.metrics.${field}`)
+  ))
+  expectNullableNumber(metrics.utilization, `${path}.metrics.utilization`)
 }
 
 function validateStorage(value: unknown) {

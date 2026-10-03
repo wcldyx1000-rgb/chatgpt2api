@@ -54,6 +54,10 @@ export function accountRowSignature(item: Account): string {
     item.last_token_refresh_at,
     item.last_token_refresh_error,
     item.last_token_refresh_error_at,
+    item.health_level,
+    item.health_reasons?.join(';'),
+    item.recent_uses_1h,
+    item.recent_uses_24h,
   ].map(signatureValue).join('|')
 }
 

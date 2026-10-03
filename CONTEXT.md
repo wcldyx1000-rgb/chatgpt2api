@@ -18,6 +18,10 @@ _Avoid_: User Key, frontend-derived token state, login retention setting
 The set of upstream accounts eligible for selection under the current model, status, quota, and policy filters.
 _Avoid_: User pool
 
+**Account Health**:
+The backend projection of how risky an Upstream Account currently is (`healthy`, `warning`, or `danger` while in rotation; `idle` when disabled, quota-limited, or invalid) with the reasons, plus the Account Pool's capacity warnings and suggested additional accounts. Recent usage comes from in-process runtime windows that reset on restart; stored account state still applies.
+_Avoid_: Frontend-derived risk, account score
+
 **Account Processing Concurrency**:
 The process-wide capacity limit shared by Upstream Account batch tasks. Remote maintenance, including AT renewal, account and quota synchronization, import verification, and background checks, consumes one slot per active account. A local atomic batch mutation, including import save, enable, disable, reset, delete, and group binding, consumes one slot for the complete batch.
 _Avoid_: Image generation concurrency, import batch size

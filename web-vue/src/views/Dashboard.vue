@@ -26,6 +26,14 @@
       <span>{{ dashboardDataWarning }}</span>
     </div>
 
+    <AccountPoolHealthNotice :health="dashboardPoolHealth">
+      <template #action>
+        <Button size="xs" variant="outline" root-class="shrink-0" @click="router.push({ name: 'accounts' })">
+          前往账号管理
+        </Button>
+      </template>
+    </AccountPoolHealthNotice>
+
     <section
       aria-label="账号概览"
       class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6"
@@ -225,6 +233,8 @@
 import { computed } from 'vue'
 import { Button, ChartCard, HelpTip, HoverCard, StatCard } from 'nanocat-ui'
 import { Icon } from '@iconify/vue'
+import { useRouter } from 'vue-router'
+import AccountPoolHealthNotice from '@/components/ai/AccountPoolHealthNotice.vue'
 import PageLoadingState from '@/components/ai/PageLoadingState.vue'
 import PagePanel from '@/components/ai/PagePanel.vue'
 import PanelHeader from '@/components/ai/PanelHeader.vue'
@@ -241,6 +251,7 @@ const {
   dashboardRanges,
   dashboardRuntime,
   dashboardOperations,
+  dashboardPoolHealth,
   dashboardDataReady,
   dashboardLoadError,
   dashboardDataWarning,
@@ -259,6 +270,7 @@ const {
   modelResponseTimeChartRef,
   modelChartRef,
 } = useDashboardPage()
+const router = useRouter()
 
 const callStats = computed(() => {
   const range = dashboardRanges.value?.['24h']
